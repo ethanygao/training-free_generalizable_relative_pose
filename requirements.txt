@@ -1,0 +1,16 @@
+torch==1.12.1
+torchvision==0.13.1
+opencv-python
+tqdm
+Pillow
+loguru
+matplotlib
+timm
+einops
+kornia
+yacs
+scikit-learn
+scikit-image
+open3d
+torch-lucent==0.1.8
+imageio-ffmpeg==0.4.9
