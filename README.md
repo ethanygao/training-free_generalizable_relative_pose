@@ -1,19 +1,19 @@
-## Towards Human-level 3D Relative Pose Estimation: Zero-Shot Unseen Generalization, Label/Training-Free, and A Single Reference 
+## Towards Human-Level 3D Relative Pose Estimation: Generalizable, Training-Free, with Single Reference
 
-Official PyTorch Implementation of [Towards Human-level 3D Relative Pose Estimation: Zero-Shot Unseen Generalization, Label/Training-Free, and A Single Reference](xxx).
+Official PyTorch Implementation of [Towards Human-Level 3D Relative Pose Estimation: Generalizable, Training-Free, with Single Reference](https://arxiv.org/abs/2406.18453).
 
-Please refer to our video and project page for more details: [video](https://youtu.be/Ajr9ugjtoDo), [project page](xxx)
+Please also refer to our [video](https://youtu.be/Ajr9ugjtoDo) for more information.
 
 ![overview](figures/overview.png)
 
-If this code is helpful to your research, please consider citing [our paper](xxx) by:
+If this code is helpful to your research, please consider citing [our paper](https://arxiv.org/abs/2406.18453) by:
 
 ```
 @article{towards2024,
     title={Towards Human-level 3D Relative Pose Estimation: Zero-Shot Unseen Generalization, Label/Training-Free, and A Single Reference},
     author={Yuan Gao and Yajing Luo and Junhong Wang and Kui Jia and Gui-Song Xia},
     year={2024},
-    journal={arXiv preprint arXiv:XXXX.XXXX}
+    journal={arXiv preprint arXiv:2406.18453}
 }
 ```
 
