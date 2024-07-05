@@ -1,6 +1,6 @@
 ## Towards Human-Level 3D Relative Pose Estimation: Generalizable, Training-Free, with Single Reference
 
-Official PyTorch Implementation of [Towards Human-Level 3D Relative Pose Estimation: Generalizable, Training-Free, with Single Reference](https://arxiv.org/abs/2406.18453).
+Official PyTorch Implementation of [Towards Human-Level 3D Relative Pose Estimation: Generalizable, Training-Free, with Single Reference](https://arxiv.org/abs/2406.18453). The codes are primarily contributed by [Yajing Luo](https://github.com/lyj9494), [Junhong Wang](https://github.com/RhineW), and [Yuan Gao](https://github.com/ethanygao).
 
 Please also refer to our [video](https://youtu.be/Ajr9ugjtoDo) for more information.
 
