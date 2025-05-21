@@ -8,9 +8,10 @@ https://github.com/One-sixth/ms_ssim_pytorch/blob/master/ssim.py
 import torch
 import torch.jit
 import torch.nn.functional as F
-from PerceptualSimilarity.models import dist_model
+import time
+import gaussian_filter_cuda
 
-# @torch.jit.script
+
 def create_window(window_size: int, sigma: float, channel: int):
     """Create 1-D gauss kernel.
 
@@ -28,16 +29,18 @@ def create_window(window_size: int, sigma: float, channel: int):
     g = g.reshape(1, 1, 1, -1).repeat(channel, 1, 1, 1)
     return g
 
-
-# @torch.jit.script
 def _gaussian_filter(x, window_1d, use_padding: bool):
-    """Blur input with 1-D kernel.
+    """
+    Blur input with 1-D kernel.
 
     :param x: batch of tensors to be blured
     :param window_1d: 1-D gauss kernel
     :param use_padding: padding image before conv
     :return: blured tensors
     """
+    x = x.contiguous()
+    window_1d = window_1d.contiguous()
+    
     C = x.shape[1]
     padding = 0
     if use_padding:
@@ -53,8 +56,6 @@ def _gaussian_filter(x, window_1d, use_padding: bool):
     )
     return out
 
-
-# @torch.jit.script
 def ssim(X, Y, window, data_range: float, use_padding: bool = False):
     """Calculate ssim index for X and Y.
 
@@ -91,14 +92,9 @@ def ssim(X, Y, window, data_range: float, use_padding: bool = False):
 
     ssim_val = ssim_map.mean(dim=(1, 2, 3))  # reduce along CHW
     cs = cs_map.mean(dim=(1, 2, 3))
-    # if torch.isnan(ssim_val).any():
-    #     print('nan in ssim_val', ssim_val)
-    #     import ipdb; ipdb.set_trace()
 
     return ssim_val, cs
 
-
-# @torch.jit.script
 def ms_ssim(
     X,
     Y,
@@ -142,48 +138,10 @@ def ms_ssim(
         (cs_vals[:-1] ** weights[:-1].unsqueeze(1)) * (ssim_vals[-1] ** weights[-1]),
         dim=0,
     )
-    # if torch.isnan(ms_ssim_val).any():
-    #     print('nan in ms_ssim_val', ms_ssim_val)
-    #     import ipdb; ipdb.set_trace()
+
     return ms_ssim_val
 
-class SSIM(torch.jit.ScriptModule):
-    __constants__ = ["data_range", "use_padding"]
-
-    def __init__(
-        self,
-        window_size=11,
-        window_sigma=1.5,
-        data_range=255.0,
-        channel=3,
-        use_padding=False,
-    ):
-        """
-        :param window_size: the size of gauss kernel
-        :param window_sigma: sigma of normal distribution
-        :param data_range: value range of input images. (usually 1.0 or 255)
-        :param channel: input channels (default: 3)
-        :param use_padding: padding image before conv
-        """
-        super().__init__()
-        assert window_size % 2 == 1, "Window size must be odd."
-        window = create_window(window_size, window_sigma, channel)
-        self.register_buffer("window", window)
-        self.data_range = data_range
-        self.use_padding = use_padding
-
-    # @torch.jit.script_method
-    def forward(self, X, Y):
-        r = ssim(
-            X,
-            Y,
-            window=self.window,
-            data_range=self.data_range,
-            use_padding=self.use_padding,
-        )
-        return r[0]
-
-class MS_SSIM(torch.jit.ScriptModule):
+class MS_SSIM(torch.nn.Module):
     __constants__ = ["data_range", "use_padding"]
 
     def __init__(
@@ -226,7 +184,6 @@ class MS_SSIM(torch.jit.ScriptModule):
 
         self.register_buffer("weights", weights)
 
-    # @torch.jit.script_method
     def forward(self, X, Y):
         return ms_ssim(
             X, Y,
@@ -237,29 +194,157 @@ class MS_SSIM(torch.jit.ScriptModule):
             normalize=self.normalize,
         )
 
-class PerceptualLoss(object):
-    def __init__(self, model="net", net="alex", use_gpu=True):
-        # print('Setting up Perceptual loss..')
-        self.model = dist_model.DistModel()
-        self.model.initialize(model=model, net=net, use_gpu=True)
-        # print('Done')
+def cuda_gaussian_filter(x, window_1d, use_padding: bool):
+    return gaussian_filter_cuda.gaussian_filter(x, window_1d, use_padding)
 
-    def __call__(self, pred, target, normalize=True):
+def ssim_cuda(X, Y, window, data_range: float, use_padding: bool = False):
+    """Calculate ssim index for X and Y.
+
+    :param X: images
+    :param Y: images
+    :param window: 1-D gauss kernel
+    :param data_range: value range of input images. (usually 1.0 or 255)
+    :param use_padding: padding image before conv
+    :return:
+    """
+    K1 = 0.01
+    K2 = 0.03
+    compensation = 1.0
+
+    C1 = (K1 * data_range) ** 2
+    C2 = (K2 * data_range) ** 2
+    
+    mu1 = cuda_gaussian_filter(X, window, use_padding)
+    mu2 = cuda_gaussian_filter(Y, window, use_padding)
+    sigma1_sq = cuda_gaussian_filter(X * X, window, use_padding)
+    sigma2_sq = cuda_gaussian_filter(Y * Y, window, use_padding)
+    sigma12 = cuda_gaussian_filter(X * Y, window, use_padding)
+
+    mu1_sq = mu1.pow(2)
+    mu2_sq = mu2.pow(2)
+    mu1_mu2 = mu1 * mu2
+
+    sigma1_sq = compensation * (sigma1_sq - mu1_sq)
+    sigma2_sq = compensation * (sigma2_sq - mu2_sq)
+    sigma12 = compensation * (sigma12 - mu1_mu2)
+
+    cs_map = (2 * sigma12 + C2) / (sigma1_sq + sigma2_sq + C2)
+    ssim_map = ((2 * mu1_mu2 + C1) / (mu1_sq + mu2_sq + C1)) * cs_map
+
+    ssim_val = ssim_map.mean(dim=(1, 2, 3))  # reduce along CHW
+    cs = cs_map.mean(dim=(1, 2, 3))
+    # if torch.isnan(ssim_val).any():
+    #     print('nan in ssim_val', ssim_val)
+    #     import ipdb; ipdb.set_trace()
+
+    return ssim_val, cs
+
+def ms_ssim_cuda(
+    X,
+    Y,
+    window,
+    data_range: float,
+    weights,
+    use_padding: bool = False,
+    normalize: bool = False,
+):
+    """interface of ms-ssim.
+
+    :param X: a batch of images, (N,C,H,W)
+    :param Y: a batch of images, (N,C,H,W)
+    :param window: 1-D gauss kernel
+    :param data_range: value range of input images. (usually 1.0 or 255)
+    :param weights: weights for different levels
+    :param use_padding: padding image before conv
+    :return:
+    """
+    levels = weights.shape[0]
+    
+    cs_vals = []
+    ssim_vals = []
+    
+    pyramid_X, pyramid_Y = [X], [Y]
+    for _ in range(levels-1):
+        padding = (pyramid_X[-1].shape[2] % 2, pyramid_X[-1].shape[3] % 2)
+        pyramid_X.append(F.avg_pool2d(pyramid_X[-1], 2, padding=padding))
+        pyramid_Y.append(F.avg_pool2d(pyramid_Y[-1], 2, padding=padding))
+
+    cs_vals = []
+    ssim_vals = []
+    for i in range(levels):
+        ssim_val, cs = ssim_cuda(pyramid_X[i], pyramid_Y[i], window, data_range, use_padding)
+        cs_vals.append(cs)
+        ssim_vals.append(ssim_val)
+        
+    cs_vals = torch.stack(cs_vals, dim=0)
+
+    # Normalize (to avoid NaNs during training unstable models, not compliant with original definition)
+    if normalize:
+        ssim_vals = [(_ssim_val + 1) / 2 for _ssim_val in ssim_vals]
+        cs_vals = (cs_vals + 1) / 2
+    ms_ssim_val = torch.prod(
+        (cs_vals[:-1] ** weights[:-1].unsqueeze(1)) * (ssim_vals[-1] ** weights[-1]),
+        dim=0,
+    )
+
+    return ms_ssim_val
+
+class MS_SSIM_CUDA(torch.nn.Module):
+    __constants__ = ["data_range", "use_padding"]
+
+    def __init__(
+        self,
+        window_size=11,
+        window_sigma=1.5,
+        data_range=255.0,
+        channel=3,
+        use_padding=False,
+        weights=None,
+        levels=None,
+        normalize=False,
+    ):
+        """class for ms-ssim.
+
+        :param window_size: the size of gauss kernel
+        :param window_sigma: sigma of normal distribution
+        :param data_range: value range of input images. (usually 1.0 or 255)
+        :param channel: input channels
+        :param use_padding: padding image before conv
+        :param weights: weights for different levels. (default [0.0448, 0.2856, 0.3001, 0.2363, 0.1333])
+        :param levels: number of downsampling
         """
-        Args:
-            normalize (bool): default True.
-                If normalize is on, scales images between [-1, 1];
-                Assumes the inputs are in range [0, 1].
-        """
-        if normalize:
-            target = 2 * target - 1
-            pred = 2 * pred - 1
+        super().__init__()
+        
+        print("###################################### apply MS_SSIM_CUDA ######################################")
+        assert window_size % 2 == 1, "Window size must be odd."
+        self.data_range = data_range
+        self.use_padding = use_padding
+        self.normalize = normalize
 
-        dist = self.model.forward(target, pred)
+        window = create_window(window_size, window_sigma, channel)
+        self.register_buffer("window", window)
 
-        return dist.mean()
+        if weights is None:
+            weights = [0.0448, 0.2856, 0.3001, 0.2363, 0.1333]
+        weights = torch.tensor(weights, dtype=torch.float)
 
+        if levels is not None:
+            weights = weights[:levels]
+            weights = weights / weights.sum()
 
-ssim_func = SSIM(data_range=1.0).cuda()
-ms_ssim_func = MS_SSIM(data_range=1.0, normalize=True).cuda()
-percep_loss_func = PerceptualLoss(model="net", net="alex", use_gpu=True)
+        self.register_buffer("weights", weights)
+
+    # @torch.jit.script_method
+    def forward(self, X, Y):
+        
+        result = ms_ssim_cuda(
+            X, Y,
+            window=self.window,
+            data_range=self.data_range,
+            weights=self.weights,
+            use_padding=self.use_padding,
+            normalize=self.normalize,
+        )
+        
+        return result
+

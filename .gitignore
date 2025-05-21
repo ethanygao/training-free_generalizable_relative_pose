@@ -1,0 +1,19 @@
+# 忽略特定类型文件
+*.log      
+*.pyc      
+*.tmp   
+*.ckpt
+*.pt
+*.csv
+*.wandb
+*.DS_Store
+
+# 忽略特定文件夹
+output/
+__pycache__/
+.vscode/
+gaussian_filter/build
+gaussian_filter/dist
+gaussian_filter/gaussian_filter_cuda.egg-info
+
+third_party

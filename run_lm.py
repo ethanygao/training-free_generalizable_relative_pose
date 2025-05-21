@@ -11,7 +11,8 @@ mapping_dict = {
     
 command_template = "CUDA_VISIBLE_DEVICES={} python main.py --outdir out/lm\
     --ds_dir bop_datasets/lm\
-    --obj_id_list {} --bop_type lm\
+    --obj_id {} --bop_type lm\
+    --height 256 --width 256 \
     --max_iter 30 --lr 0.01 --lr_patience_num 6\
     --use_pca_rgb True --use_rgb_msssim_loss --use_pca_msssim_loss --use_backface_culling 2"
 

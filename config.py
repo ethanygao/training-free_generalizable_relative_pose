@@ -6,9 +6,9 @@ def config_parser():
     parser.add_argument('--outdir', help='specify output directory', default='out')
     
     ### for dataloader ###
-    parser.add_argument('--ds_dir', type= str, help='the dataset path', default='/data2/yajingluo/lyj/bop_datasets')
+    parser.add_argument('--ds_dir', type= str, help='the dataset path', default='/data2/yajingluo/lyj/datasets/bop_datasets')
     parser.add_argument('--bop_type',type= str, help='options : lm /lmo /ycbv', default='lm')
-    parser.add_argument('--obj_id_list', nargs='+', type=int, help='List of integers')
+    parser.add_argument('--obj_id',  type=int, help='object index', default=6)
     parser.add_argument('--height', type=int, default= 360, help='resolution')
     parser.add_argument('--width', type=int, default= 480, help='resolution')
     
@@ -26,6 +26,7 @@ def config_parser():
     parser.add_argument('--opengl', help='enable OpenGL rendering', action='store_true', default=False)
     parser.add_argument('--display-interval', type=int, default=0)
     parser.add_argument('--mp4save_interval', type=int, default=5)
+    parser.add_argument('--log_interval', type=int, default=10)
     parser.add_argument('--grad_phase_start', type=float, default=0.5)
     parser.add_argument('--max_iter', type=int, default=30)
     parser.add_argument('--lr', type=float, default=0.1)

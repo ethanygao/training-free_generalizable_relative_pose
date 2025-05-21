@@ -1,15 +1,27 @@
-import numpy as np
-import cv2
-import torch
-import torch.nn.functional as F
-import open3d as o3d
 import os
 import csv
 import math
+import random
+import cv2
+import numpy as np
+import torch
+import torch.nn.functional as F
+
+def seed_all(seed):
+    np.random.seed(seed)
+    random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
 
 #----------------------------------------------------------------------------
-### dataloader utils ###
+### data process utils ###
 #----------------------------------------------------------------------------
+def preprocess_image(image):
+    image = image.squeeze().float() / 255.0
+    image = image.flip(0).unsqueeze(0)
+    return image
+ 
 def get_3rd_point(a, b):
     direct = a - b
     return b + np.array([-direct[1], direct[0]], dtype=np.float32)
@@ -67,7 +79,7 @@ def get_image_crop_resize(image, box, resize_shape):
     resize_h, resize_w = resize_shape
     trans_crop = get_affine_transform(center, scale, 0, [resize_w, resize_h])
     image_crop = cv2.warpAffine(
-        image, trans_crop, (resize_w, resize_h), flags=cv2.INTER_LINEAR)
+        image, trans_crop, (resize_w, resize_h), flags=cv2.INTER_NEAREST)
 
     trans_crop_homo = np.concatenate([trans_crop, np.array([[0, 0, 1]])], axis=0)
     return image_crop, trans_crop_homo
@@ -99,6 +111,18 @@ def get_K_crop_resize(box, K_orig, resize_shape):
 #----------------------------------------------------------------------------
 ### render utils ###
 #----------------------------------------------------------------------------
+
+def unsqueeze_mesh_info(mesh_info, bs):
+    unsqueezed = []
+    for item in mesh_info:
+        unsqueezed.append(item.expand(bs, -1, -1))  # 在第0维度上扩展
+    return tuple(unsqueezed)
+
+def squeeze_mesh_info(mesh_info, device = 'cpu'):
+    squeezed = []
+    for item in mesh_info:
+        squeezed.append(item[0].to(device))
+    return tuple(squeezed)
 
 #----------------------------------------------------------------------------
 # Quaternion math.
@@ -297,19 +321,6 @@ def matrix_to_quaternion(matrix: torch.Tensor) -> torch.Tensor:
     ].reshape(batch_dim + (4,))
 
 
-# load singel mesh information.
-def load_ply_mesh(filename, device=torch.device('cpu')):
-    mesh = o3d.io.read_triangle_mesh(filename)
-    vertices = torch.tensor(np.array(mesh.vertices), dtype=torch.float32, device=device)
-    faces = torch.tensor(mesh.triangles, dtype=torch.int32, device=device)
-
-    if mesh.has_vertex_colors():
-        colors = torch.tensor(mesh.vertex_colors, dtype=torch.float32, device=device)
-    else:
-        colors = None
-    
-    return {"v": vertices, "f": faces, "colors": colors}
-
 # Rotational Error.
 def rotation_error(R_est, R_gt):
     """
@@ -317,6 +328,8 @@ def rotation_error(R_est, R_gt):
     :param R_gt: 3x3 ndarray with the ground-truth rotation matrix.
     :return: The calculated rotation error in [deg].
     """
+    R_est = R_est[:3,:3]
+    R_gt = R_gt[:3,:3]
     assert (R_est.shape == R_gt.shape == (3, 3))
     
     if torch.is_tensor(R_est):
@@ -350,9 +363,9 @@ def check_exists(csv_path, qry_ref_name, scene_name):
             print(f"skip pair {qry_ref_name} because it exist in line{int(second_column.index(qry_ref_name))+2}")
     return skip
 
-def make_path(args, obj):
+def make_path(args):
     out_dir = args.outdir
-    obj_name = f'{obj:06d}'
+    obj_name = f'{args.obj_id:06d}'
     diff = f'gd_{args.limit_deg_min}_{args.limit_deg_max}'
     
     if args.use_pca_rgb == True:
@@ -369,14 +382,37 @@ def make_path(args, obj):
         
     return video_path, csv_path, texture_type 
 
+
+def setup_output(args):
+    video_path, csv_path, texture_type = make_path(args) if args.outdir else (None, None, None)
+    save_est_csv_path = None
+    if csv_path and texture_type:
+        save_est_csv_path = os.path.join(csv_path, f'{texture_type}_est_{args.obj_id:06d}.csv')
+        with open(f'{csv_path}/config.txt', 'w') as file:
+            for arg in vars(args):
+                file.write(f"{arg}: {getattr(args, arg)}\n")
+    return video_path, csv_path, texture_type, save_est_csv_path
+
+def save_video_frame(writer, ref_rgb, qry_rgb, rgb_opt, ref_pca, qry_pca, pca_opt):
+    qry_color_rgb, ref_color_rgb, qry_rgb_opt = [
+        img[0].clone().detach().cpu().numpy()
+        for img in [qry_rgb, ref_rgb, rgb_opt]
+    ]
+    qry_color_pca, ref_color_pca, img_pca_opt = [
+        img[0].clone().detach().cpu().numpy()
+        for img in [qry_pca, ref_pca, pca_opt]
+    ]
+    result_rgb_image = np.concatenate([ref_color_rgb, qry_color_rgb, qry_rgb_opt], axis=1)[::-1]
+    result_pca_image = np.concatenate([ref_color_pca, qry_color_pca, img_pca_opt], axis=1)[::-1]
+    result_image = np.concatenate([result_rgb_image, result_pca_image], axis=0)
+    writer.append_data(np.clip(np.rint(result_image * 255.0), 0, 255).astype(np.uint8))
+
 def save_bop_results(path, results):
 
     lines = ['']
     
-    lines.append('{scene_name},{im_id},{obj_id},{re_inital},{re_best},{R}'.format(
-        scene_name = results['scene_name'],
-        im_id = results['im_id'],
-        obj_id = results['obj_id'],
+    lines.append('{pair_info},{re_inital},{re_best},{R}'.format(
+        pair_info = results['pair_info'],
         re_inital = results['re_inital'],
         re_best = results['re_best'],
         R =' '.join(map(str, results['R'].flatten().tolist())),)
@@ -391,7 +427,7 @@ def compute_column_mean(column_index, data):
     mean = sum(values) / total_values
     return mean, values, total_values
 
-def compute_csv_accuracy(file_path, total_result_path, obj_id):
+def compute_csv_accuracy(file_path, total_result_path, obj_id, column_index):
     with open(file_path, 'r') as file:
         reader = csv.reader(file)
         data = list(reader)
@@ -399,7 +435,7 @@ def compute_csv_accuracy(file_path, total_result_path, obj_id):
     
     lines = []
 
-    mean_error, error_values, total_error_values = compute_column_mean(4, data)
+    mean_error, error_values, total_error_values = compute_column_mean(column_index, data)
     thresholds = [30, 15, 10, 5, 1]
     accuracies = [(sum(1 for value in error_values if value < threshold) / total_error_values) * 100 for threshold in thresholds]
 
@@ -411,24 +447,12 @@ def compute_csv_accuracy(file_path, total_result_path, obj_id):
     with open(total_result_path, 'a') as f:
         f.write('\n'.join(lines))
 
-def compute_init_csv_accuracy(file_path, total_result_path, obj_id):
-    with open(file_path, 'r') as file:
-        reader = csv.reader(file)
-        data = list(reader)
-        data.pop(0)
-    
-    lines = []
-    erro_column_index = 3
-
-    error_values = list(map(float, [row[erro_column_index] for row in data]))
-    total_error_values = len(error_values)
-    mean_error = sum(error_values) / total_error_values
-    thresholds = [30, 15, 10, 5, 1]
-    accuracies = [(sum(1 for value in error_values if value < threshold) / total_error_values) * 100 for threshold in thresholds]
-
-    obj_name = f'instance_{obj_id:06d}'
-    lines = ['\n{obj_name},{mean_error:.2f},{acc30:.2f},{acc15:.2f},{acc10:.2f},{acc5:.2f},{acc1:.2f}\n'.format(\
-            obj_name=obj_name, mean_error=mean_error, acc30=accuracies[0], acc15=accuracies[1], acc10=accuracies[2], acc5=accuracies[3], acc1=accuracies[4])]
-    
-    with open(total_result_path, 'a') as f:
-        f.write('\n'.join(lines))
+def setup_output(args):
+    video_path, csv_path, texture_type = make_path(args) if args.outdir else (None, None, None)
+    save_est_csv_path = None
+    if csv_path and texture_type:
+        save_est_csv_path = os.path.join(csv_path, f'{texture_type}_est_{args.obj_id:06d}.csv')
+        with open(f'{csv_path}/config.txt', 'w') as file:
+            for arg in vars(args):
+                file.write(f"{arg}: {getattr(args, arg)}\n")
+    return video_path, csv_path, texture_type, save_est_csv_path

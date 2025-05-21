@@ -85,6 +85,11 @@ def rotate_vector(quat, vector):
     uuv = torch.cross(pure_quat, uv, dim=1)
     return (vector + 2 * (quat[:, :1] * uv + uuv)).view(original_shape)
 
+def gen_init_pose(t, viewpoint=100, inplane_rotation=3, hemisphere = False):    
+    rs = evenly_distributed_mats(viewpoint, inplane_rotation, hemisphere = hemisphere).cuda()
+    ts = t.expand(rs.shape[0], -1, -1)
+    return rs, ts
+
 def evenly_distributed_points(n: int, hemisphere=False, pole=(0.0, 0.0, 1.0)):
     """
     Uses the sunflower method to sample points on a sphere that are
