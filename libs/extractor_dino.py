@@ -17,6 +17,7 @@ import argparse
 from pathlib import Path
 from typing import Union, List, Tuple
 from PIL import Image
+import time
 
 class ViTExtractor:
     """ This class facilitates extraction of features, descriptors, and saliency maps from a ViT.
@@ -462,10 +463,12 @@ def build_dino_extractor(dino_model_size = 'large'):
     
     return extractor  
 
+
 def get_pca_image_dinov2(extractor, img_pil, img_mask, 
-                         feature_layer = None, is_ref = True, projection = None):
+                         feature_layer=None, is_ref=True, projection=None,
+                         save_name=None):
     '''
-    img_pil: PIL
+    img_pil: PIL Image
     '''
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     
@@ -475,54 +478,47 @@ def get_pca_image_dinov2(extractor, img_pil, img_mask,
     if feature_layer == None:
         feature_layer = attn_layer
         
-    orig_width = np.array(img_pil).shape[1]
-    orig_height = np.array(img_pil).shape[0]
-   
+    orig_width, orig_height = img_pil.size
+    
     with torch.no_grad():
-        img1_batch = transform1(img_pil).unsqueeze(0).cuda() 
-        w, h = img1_batch.shape[-1], img1_batch.shape[-2]
-        patch_h, patch_w  = h // patch_size, w // patch_size
-    
-        features = extractor.extract_descriptors(img1_batch.to(device), feature_layer, 'token')
+        img1_batch = transform1(img_pil).unsqueeze(0).to(device)
+        w, h = img1_batch.shape[-2:] 
+        patch_h, patch_w = h // patch_size, w // patch_size
+
+        time1 = time.time()
+        features = extractor.extract_descriptors(img1_batch, feature_layer, 'token')
         feat_dim = features.shape[-1]
-         
-    total_features = features.reshape(patch_h * patch_w, feat_dim).cpu() # (patch_h * patch_w, feat_dim)
-    mask = torch.tensor(img_mask).view(1,1, img_mask.shape[0], img_mask.shape[1]).to(torch.float) # // .to(torch.float)
-    img_mask =  (torch.nn.functional.interpolate(mask, size=(patch_h, patch_w), mode="bilinear",align_corners=False).reshape(patch_h * patch_w, 1).cpu().numpy())     # bilinear     
+        time2 = time.time()
+        # print(f"Feature extraction time: {time2 - time1:.2f}s")
     
-    pca = PCA(n_components=3)
-    pca.fit(total_features)
-    pca_features = pca.transform(total_features)
+    mask_tensor = torch.tensor(img_mask, device=device).float().unsqueeze(0).unsqueeze(0)
+    img_mask_resized = torch.nn.functional.interpolate(
+        mask_tensor, size=(patch_h, patch_w), mode="bilinear", align_corners=False
+    ).squeeze().flatten() > 0.5 
 
-    pca_features[:, 0] = (pca_features[:, 0] - pca_features[:, 0].min()) / \
-                        (pca_features[:, 0].max() - pca_features[:, 0].min())
-
-    pca_features_bg = np.where(img_mask.flatten() == 0, True, False)
-    pca_features_fg = ~ pca_features_bg
+    total_features = features.reshape(patch_h * patch_w, feat_dim)
+    fg_features = total_features[img_mask_resized]
+    fg_features_np = fg_features.cpu().numpy()
     
-    pca.fit(total_features[pca_features_fg]) 
+    pca = PCA(n_components=3, svd_solver='randomized')
+    pca.fit(fg_features_np)
     
-    if is_ref == False:
+    if not is_ref and projection is not None:
         pca.components_ = projection
-    pca_features_left = pca.transform(total_features[pca_features_fg])
-
-    for i in range(3):
-        pca_features_left[:, i] = (pca_features_left[:, i] - pca_features_left[:, i].min()) / (pca_features_left[:, i].max() - pca_features_left[:, i].min())
-
-    pca_features_rgb = pca_features.copy()
-    pca_features_rgb[pca_features_bg] = 0
-    pca_features_rgb[pca_features_fg] = pca_features_left
+    
+    pca_features = pca.transform(fg_features_np).astype(np.float32)
+    
+    pca_features -= pca_features.min(axis=0)
+    pca_features /= pca_features.max(axis=0)
+    
+    pca_features_rgb = torch.zeros((patch_h * patch_w, 3), device=device)
+    pca_features_rgb[img_mask_resized] = torch.from_numpy(pca_features).to(device)
     pca_features_rgb = pca_features_rgb.reshape(patch_h, patch_w, 3)
 
-    rgb_pil = Image.fromarray((pca_features_rgb*255).astype(np.uint8))
-    rgb_resize = rgb_pil.resize((orig_width, orig_height), Image.BILINEAR)
-    rgb_resize_np = np.array(rgb_resize)
+    rgb_pil = Image.fromarray(
+        (pca_features_rgb.cpu().numpy() * 255).astype(np.uint8)
+    ).resize((orig_width, orig_height), Image.BILINEAR)
 
-    if is_ref == True:
-        projection = pca.components_ 
-        return rgb_resize_np, projection
-    else:
-        return rgb_resize_np
-        
-        
+    rgb_np = np.array(rgb_pil)
     
+    return (rgb_np, pca.components_) if is_ref else rgb_np
